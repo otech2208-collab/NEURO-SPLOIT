@@ -1,0 +1,13 @@
+import Groq from "groq-sdk";
+import { NextResponse } from "next/server";
+import { requireUser } from "@/lib/auth";
+import { getSupabase } from "@/lib/supabase";
+export const runtime = "nodejs";
+const SYSTEM_PROMPT = "Tu es NEURO-SPLOIT, une IA experte en programmation, cybersécurité, analyse de code et optimisation de scripts. Réponds en français sauf demande contraire. Tu aides uniquement sur des systèmes, codes et environnements dont l’utilisateur possède l’autorisation explicite. Refuse toute demande d’intrusion non autorisée, de vol de données, de contournement d’authentification, de malware, de déni de service ou d’exfiltration. Propose alors une approche préventive, de correction ou d’apprentissage en environnement isolé. Utilise Markdown et place le code dans des blocs balisés.";
+type HistoryMessage = { role: "user" | "assistant"; content: string };
+export async function POST(request: Request) {
+  const { userId, response } = await requireUser(); if (response || !userId) return response!;
+  const body = await request.json().catch(() => null) as { message?: unknown; history?: unknown } | null; const message = typeof body?.message === "string" ? body.message.trim() : ""; const history = Array.isArray(body?.history) ? body.history.filter((item): item is HistoryMessage => Boolean(item) && typeof item === "object" && ((item as HistoryMessage).role === "user" || (item as HistoryMessage).role === "assistant") && typeof (item as HistoryMessage).content === "string").slice(-16) : [];
+  if (!message || message.length > 8000) return NextResponse.json({ error: "Message invalide." }, { status: 400 }); if (!process.env.GROQ_API_KEY) return NextResponse.json({ error: "Groq n’est pas configuré sur le serveur." }, { status: 503 });
+  try { const groq = new Groq({ apiKey: process.env.GROQ_API_KEY }); const completion = await groq.chat.completions.create({ model: "openai/gpt-oss-120b", max_completion_tokens: 2500, messages: [{ role: "system", content: SYSTEM_PROMPT }, ...history, { role: "user", content: message }] }); const content = completion.choices[0]?.message.content?.trim(); if (!content) return NextResponse.json({ error: "Groq n’a pas renvoyé de réponse exploitable." }, { status: 502 }); const tokensUsed = completion.usage?.total_tokens ?? 0; const supabase = getSupabase(); if (supabase) await supabase.from("usage_logs").insert({ user_id: userId, tokens_used: tokensUsed }); return NextResponse.json({ message: { role: "assistant", content, tokensUsed } }); } catch (error) { console.error("Groq chat failed", error); return NextResponse.json({ error: "La demande IA n’a pas pu être traitée." }, { status: 502 }); }
+}
